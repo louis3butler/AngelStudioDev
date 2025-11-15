@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Tools/UEdMode.h"
+#include "Toolkits/IToolkitHost.h"
 #include "AngelStudioEditorMode.generated.h"
 
 /**
@@ -14,7 +15,7 @@
  * Take a look at the UEdMode markup for more extensibility options.
  */
 UCLASS()
-class UAngelStudioEditorMode : public UEdMode
+class ANGELSTUDIO_API UAngelStudioEditorMode : public UEdMode
 {
 	GENERATED_BODY()
 

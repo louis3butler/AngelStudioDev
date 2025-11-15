@@ -3,6 +3,7 @@
 #include "AngelStudioEditorModeCommands.h"
 #include "AngelStudioEditorMode.h"
 #include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "AngelStudioEditorModeCommands"
 

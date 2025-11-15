@@ -2,13 +2,9 @@
 
 #include "Modules/ModuleManager.h"
 
-class FAngelStudioModule : public IModuleInterface
+class FAngelStudioRuntimeModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
-
-private:
-	void RegisterMenus();
-	void EnsureDefaultTemplates();
 };

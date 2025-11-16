@@ -28,7 +28,9 @@ public class AngelStudio : ModuleRules
                 "Blutility",
                 "EditorInteractiveToolsFramework",
                 "InteractiveToolsFramework",
-                "AssetRegistry" // for locating rig template assets
+                "AssetRegistry",
+                "DeveloperSettings",
+                "PropertyEditor"
             }
         );
 

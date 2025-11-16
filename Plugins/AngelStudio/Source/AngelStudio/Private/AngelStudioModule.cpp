@@ -3,6 +3,8 @@
 #include "LevelEditor.h"
 #include "AngelRigWizard.h"
 #include "AngelRigTemplate.h"
+#include "AngelStudioEditorModeCommands.h"
+#include "AngelAssetActionUtility.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/AssetManager.h"
 
@@ -10,6 +12,9 @@ IMPLEMENT_MODULE(FAngelStudioModule, AngelStudio)
 
 void FAngelStudioModule::StartupModule()
 {
+	// Register editor mode commands used by the mode/tool palette before any mode/tool code runs
+	FAngelStudioEditorModeCommands::Register();
+
 	EnsureDefaultTemplates();
 
 	UToolMenus::RegisterStartupCallback(
@@ -20,22 +25,64 @@ void FAngelStudioModule::StartupModule()
 void FAngelStudioModule::ShutdownModule()
 {
 	UToolMenus::UnregisterOwner(this);
+	FAngelStudioEditorModeCommands::Unregister();
 }
 
 void FAngelStudioModule::RegisterMenus()
 {
-	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Window");
-	if (!Menu) return;
+	// Main menu Window > Angel Studio
+	if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Window"))
+	{
+		FToolMenuSection& Section = Menu->AddSection("AngelStudioSection", FText::FromString("Angel Studio"));
+		Section.AddMenuEntry(
+			"OpenAngelRigWizard",
+			FText::FromString("Angel Rig Wizard"),
+			FText::FromString("Open the AngelStudio rigging wizard."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateStatic(&FAngelRigWizard::OpenWindow))
+		);
+	}
 
-	FToolMenuSection& Section = Menu->AddSection("AngelStudioSection", FText::FromString("Angel Studio"));
+	// Main menu Tools > Angel Studio
+	if (UToolMenu* ToolsMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Tools"))
+	{
+		FToolMenuSection& Section = ToolsMenu->AddSection("AngelStudioTools", FText::FromString("Angel Studio"));
+		Section.AddMenuEntry(
+			"Angel_OpenRigWizard",
+			FText::FromString("Open Rig Wizard"),
+			FText::FromString("Open the AngelStudio rigging wizard."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateStatic(&FAngelRigWizard::OpenWindow))
+		);
+		Section.AddMenuEntry(
+			"Angel_AutoRigSelectedMeshes",
+			FText::FromString("Auto Rig Selected Meshes"),
+			FText::FromString("Run the batch auto-rigging on selected StaticMeshes."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([]()
+			{
+#if WITH_EDITOR
+				if (UAngelAssetActionUtility* Util = NewObject<UAngelAssetActionUtility>())
+				{
+					Util->AutoRigSelectedMeshes();
+				}
+#endif
+			}))
+		);
+	}
 
-	Section.AddMenuEntry(
-		"OpenAngelRigWizard",
-		FText::FromString("Angel Rig Wizard"),
-		FText::FromString("Open the AngelStudio rigging wizard."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateStatic(&FAngelRigWizard::OpenWindow))
-	);
+	// Toolbar button
+	if (UToolMenu* Toolbar = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorToolBar"))
+	{
+		FToolMenuSection& Section = Toolbar->AddSection("AngelStudioToolbar", FText::FromString("Angel Studio"));
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(
+			"AngelRigWizard_Toolbar",
+			FUIAction(FExecuteAction::CreateStatic(&FAngelRigWizard::OpenWindow)),
+			FText::FromString("Angel Studio"),
+			FText::FromString("Open Angel Rig Wizard"),
+			FSlateIcon()
+		));
+	}
 }
 
 void FAngelStudioModule::EnsureDefaultTemplates()

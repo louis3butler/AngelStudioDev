@@ -27,7 +27,6 @@ UBlueprint* UAngelControlRigGenerator::GenerateControlRig(
 
 	if (!NewCR)
 	{
-		// Fallback: empty blueprint as placeholder
 		NewCR = NewObject<UBlueprint>(Package, ControlRigName, RF_Public | RF_Standalone);
 	}
 

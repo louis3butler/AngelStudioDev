@@ -10,6 +10,7 @@
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "Editor.h"
+#include "AngelGeneratedTag.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAngelBatchRig, Log, All);
 
@@ -66,38 +67,25 @@ void UAngelBatchRigProcessor::RunBatch(
 			continue;
 		}
 
-		// Package names
-		FString SkeletonPkgName = AngelBatchInternal::MakeUniqueAssetPath(BaseFolder, Mesh->GetName() + TEXT("_Skeleton"));
 		FString SkeletalMeshPkgName = AngelBatchInternal::MakeUniqueAssetPath(BaseFolder, Mesh->GetName() + TEXT("_SkelMesh"));
 		FString ControlRigPkgName = AngelBatchInternal::MakeUniqueAssetPath(BaseFolder, Mesh->GetName() + TEXT("_ControlRig"));
 		FString GeneratedDataPkgName = AngelBatchInternal::MakeUniqueAssetPath(BaseFolder, Mesh->GetName() + TEXT("_RigData"));
 
-		UPackage* SkeletonPkg = CreatePackage(*SkeletonPkgName);
 		UPackage* SkeletalMeshPkg = CreatePackage(*SkeletalMeshPkgName);
 		UPackage* ControlRigPkg = CreatePackage(*ControlRigPkgName);
 		UPackage* DataPkg = CreatePackage(*GeneratedDataPkgName);
 
-		// Build skeleton (still stub)
-		UAngelSkeletonBuilder* SkeletonBuilder = NewObject<UAngelSkeletonBuilder>();
-		USkeleton* Skeleton = SkeletonBuilder->BuildSkeleton(SkeletonPkg, Template, Landmarks, FName(*FPackageName::GetShortName(SkeletonPkgName)));
-		if (!Skeleton)
-		{
-			UE_LOG(LogAngelBatchRig, Warning, TEXT("Skeleton build failed for %s"), *Mesh->GetName());
-			++Index;
-			OnProgress.Broadcast(float(Index) / float(Total));
-			continue;
-		}
-
 		// Build skeletal mesh (stub + pseudo weighting log)
 		UAngelSkeletalMeshBuilder* SkelMeshBuilder = NewObject<UAngelSkeletalMeshBuilder>();
-		USkeletalMesh* SkelMesh = SkelMeshBuilder->BuildSkeletalMesh(SkeletalMeshPkg, Mesh, Skeleton, FName(*FPackageName::GetShortName(SkeletalMeshPkgName)));
-		if (!SkelMesh)
+		USkeletalMesh* SkelMesh = SkelMeshBuilder->BuildSkeletalMesh(SkeletalMeshPkg, Mesh, Template, Landmarks, FName(*FPackageName::GetShortName(SkeletalMeshPkgName)));
+		if (!SkelMesh || !SkelMesh->GetSkeleton())
 		{
 			UE_LOG(LogAngelBatchRig, Warning, TEXT("Skeletal mesh build failed for %s"), *Mesh->GetName());
 			++Index;
 			OnProgress.Broadcast(float(Index) / float(Total));
 			continue;
 		}
+		USkeleton* Skeleton = SkelMesh->GetSkeleton();
 
 		// Control Rig
 		UAngelControlRigGenerator* CRGen = NewObject<UAngelControlRigGenerator>();
@@ -141,6 +129,50 @@ void UAngelBatchRigProcessor::RunBatch(
 
 			RigData->MarkPackageDirty();
 			FAssetRegistryModule::AssetCreated(RigData);
+		}
+
+		// Tag only skeletal mesh and skeleton
+		if (SkelMesh && !SkelMesh->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass()))
+		{
+			UAngelGeneratedTag* LocalTagSM = NewObject<UAngelGeneratedTag>(SkelMesh, UAngelGeneratedTag::StaticClass());
+			SkelMesh->AddAssetUserData(LocalTagSM);
+		}
+		if (Skeleton && !Skeleton->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass()))
+		{
+			UAngelGeneratedTag* LocalTagSkel = NewObject<UAngelGeneratedTag>(Skeleton, UAngelGeneratedTag::StaticClass());
+			Skeleton->AddAssetUserData(LocalTagSkel);
+		}
+
+		if (SkelMesh)
+		{
+			if (UAngelGeneratedTag* LocalMetaTagMesh = Cast<UAngelGeneratedTag>(SkelMesh->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass())))
+			{
+				LocalMetaTagMesh->Metadata.GeneratorVersion = 1;
+				LocalMetaTagMesh->Metadata.GeneratedUtcSeconds = FDateTime::UtcNow().ToUnixTimestamp();
+				LocalMetaTagMesh->Metadata.TemplateName = Template->TemplateName;
+				LocalMetaTagMesh->Metadata.SourceMeshName = Mesh->GetFName();
+				uint64 Hash = 1469598103934665603ull;
+				auto MixStr=[&](const FString& S){ for(auto C:S){ Hash = (Hash ^ (uint8)C) * 1099511628211ull; } }; 
+				MixStr(Template->TemplateName.ToString());
+				MixStr(Mesh->GetName());
+				Hash ^= Landmarks.Landmarks.Num(); Hash *= 1099511628211ull;
+				LocalMetaTagMesh->Metadata.ContentHashHi = int32((Hash >> 32) & 0xFFFFFFFF);
+				LocalMetaTagMesh->Metadata.ContentHashLo = int32(Hash & 0xFFFFFFFF);
+				SkelMesh->MarkPackageDirty();
+			}
+		}
+		if (Skeleton)
+		{
+			if (UAngelGeneratedTag* LocalMetaTagSkel = Cast<UAngelGeneratedTag>(Skeleton->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass())))
+			{
+				LocalMetaTagSkel->Metadata.GeneratorVersion = 1;
+				LocalMetaTagSkel->Metadata.GeneratedUtcSeconds = FDateTime::UtcNow().ToUnixTimestamp();
+				LocalMetaTagSkel->Metadata.TemplateName = Template->TemplateName;
+				LocalMetaTagSkel->Metadata.SourceMeshName = Mesh->GetFName();
+				LocalMetaTagSkel->Metadata.ContentHashHi = 0;
+				LocalMetaTagSkel->Metadata.ContentHashLo = 0;
+				Skeleton->MarkPackageDirty();
+			}
 		}
 
 		UE_LOG(LogAngelBatchRig, Log, TEXT("Rig generated for %s"), *Mesh->GetName());

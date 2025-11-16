@@ -13,6 +13,7 @@ public:
 	class USkeletalMesh* BuildSkeletalMesh(
 		UObject* Outer,
 		class UStaticMesh* SourceMesh,
-		class USkeleton* TargetSkeleton,
+		const class UAngelRigTemplate* Template,
+		const struct FAngelLandmarkSolveResult& Landmarks,
 		FName SkeletalMeshName);
 };

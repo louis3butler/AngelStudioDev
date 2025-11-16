@@ -16,6 +16,7 @@
 #include "AngelStudioSettings.h"
 #include "AngelBoneVisualizer.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
@@ -27,6 +28,11 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "ScopedTransaction.h"
 #include "Misc/ScopedSlowTask.h"
+#include "AngelGeneratedTag.h"
+
+#include "Rendering/SkeletalMeshModel.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "SkeletalMeshTypes.h"
 
 struct FAngelTemplateItem
 {
@@ -131,6 +137,21 @@ public:
 					SNew(SButton)
 					.Text(FText::FromString(TEXT("Clear Debug Landmarks")))
 					.OnClicked(this, &SAngelRigWizardWidget::OnClearDebug)
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight().Padding(4.f)
+				[
+					SNew(SButton)
+					.Text(FText::FromString(TEXT("Rebuild Weights (Selected SkeletalMesh)")))
+					.OnClicked(this, &SAngelRigWizardWidget::OnRebuildWeights)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight().Padding(4.f)
+				[
+					SNew(SButton)
+					.Text(FText::FromString(TEXT("Rebuild Mesh (Selected SkeletalMesh)")))
+					.OnClicked(this, &SAngelRigWizardWidget::OnRebuildMesh)
 				]
 
 				+ SVerticalBox::Slot()
@@ -379,27 +400,17 @@ private:
 		const UAngelStudioSettings* Settings = GetDefault<UAngelStudioSettings>();
 		const FString BaseFolder = Settings && !Settings->DefaultOutputFolder.Path.IsEmpty() ? Settings->DefaultOutputFolder.Path : TEXT("/Game/AngelStudio/Generated");
 
-		SlowTask.EnterProgressFrame(1.f, FText::FromString(TEXT("Creating skeleton...")));
-		FString SkeletonPkgName = MakeUniqueAssetPath(BaseFolder, CachedMesh->GetName() + TEXT("_Skeleton"));
-		UPackage* SkeletonPkg = CreatePackage(*SkeletonPkgName);
-		UAngelSkeletonBuilder* SkeletonBuilder = NewObject<UAngelSkeletonBuilder>();
-		USkeleton* Skeleton = SkeletonBuilder->BuildSkeleton(SkeletonPkg, CurrentTemplate, CachedLandmarks, FName(*FPackageName::GetShortName(SkeletonPkgName)));
-		if (!Skeleton)
-		{
-			SetStatus("Skeleton build failed.");
-			return FReply::Handled();
-		}
-
-		SlowTask.EnterProgressFrame(1.f, FText::FromString(TEXT("Creating skeletal mesh...")));
+		SlowTask.EnterProgressFrame(1.f, FText::FromString(TEXT("Creating skeletal mesh + skeleton...")));
 		FString SkeletalMeshPkgName = MakeUniqueAssetPath(BaseFolder, CachedMesh->GetName() + TEXT("_SkelMesh"));
 		UPackage* SkeletalMeshPkg = CreatePackage(*SkeletalMeshPkgName);
 		UAngelSkeletalMeshBuilder* SkelMeshBuilder = NewObject<UAngelSkeletalMeshBuilder>();
-		USkeletalMesh* SkelMesh = SkelMeshBuilder->BuildSkeletalMesh(SkeletalMeshPkg, CachedMesh, Skeleton, FName(*FPackageName::GetShortName(SkeletalMeshPkgName)));
-		if (!SkelMesh)
+		USkeletalMesh* SkelMesh = SkelMeshBuilder->BuildSkeletalMesh(SkeletalMeshPkg, CachedMesh, CurrentTemplate, CachedLandmarks, FName(*FPackageName::GetShortName(SkeletalMeshPkgName)));
+		if (!SkelMesh || !SkelMesh->GetSkeleton())
 		{
-			SetStatus("SkelMesh build failed.");
+			SetStatus("Skeletal mesh build failed.");
 			return FReply::Handled();
 		}
+		USkeleton* Skeleton = SkelMesh->GetSkeleton();
 
 		SlowTask.EnterProgressFrame(1.f, FText::FromString(TEXT("Creating control rig...")));
 		FString ControlRigPkgName = MakeUniqueAssetPath(BaseFolder, CachedMesh->GetName() + TEXT("_ControlRig"));
@@ -412,7 +423,7 @@ private:
 			return FReply::Handled();
 		}
 
-		// Rig data asset
+		SlowTask.EnterProgressFrame(1.f, FText::FromString(TEXT("Creating rig data asset...")));
 		FString GeneratedDataPkgName = MakeUniqueAssetPath(BaseFolder, CachedMesh->GetName() + TEXT("_RigData"));
 		UPackage* DataPkg = CreatePackage(*GeneratedDataPkgName);
 		UAngelGeneratedRigData* RigData = NewObject<UAngelGeneratedRigData>(DataPkg, UAngelGeneratedRigData::StaticClass(), FName(*FPackageName::GetShortName(GeneratedDataPkgName)), RF_Public | RF_Standalone);
@@ -447,9 +458,52 @@ private:
 			FAssetRegistryModule::AssetCreated(RigData);
 		}
 
+		// Tag supported assets (Skeleton, SkeletalMesh) - exclude Blueprint/DataAsset which do not expose AssetUserData helpers here
+		if (SkelMesh && !SkelMesh->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass()))
+		{
+			UAngelGeneratedTag* LocalTagSM = NewObject<UAngelGeneratedTag>(SkelMesh, UAngelGeneratedTag::StaticClass());
+			SkelMesh->AddAssetUserData(LocalTagSM);
+		}
+		if (Skeleton && !Skeleton->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass()))
+		{
+			UAngelGeneratedTag* LocalTagSkel = NewObject<UAngelGeneratedTag>(Skeleton, UAngelGeneratedTag::StaticClass());
+			Skeleton->AddAssetUserData(LocalTagSkel);
+		}
+
+		if (SkelMesh)
+		{
+			if (UAngelGeneratedTag* LocalMetaTagMesh = Cast<UAngelGeneratedTag>(SkelMesh->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass())))
+			{
+				LocalMetaTagMesh->Metadata.GeneratorVersion = 1;
+				LocalMetaTagMesh->Metadata.GeneratedUtcSeconds = FDateTime::UtcNow().ToUnixTimestamp();
+				LocalMetaTagMesh->Metadata.TemplateName = CurrentTemplate->TemplateName;
+				LocalMetaTagMesh->Metadata.SourceMeshName = CachedMesh->GetFName();
+				uint64 Hash = 1469598103934665603ull;
+				auto MixStr=[&](const FString& S){ for(auto C:S){ Hash = (Hash ^ (uint8)C) * 1099511628211ull; } }; 
+				MixStr(CurrentTemplate->TemplateName.ToString());
+				MixStr(CachedMesh->GetName());
+				Hash ^= CachedLandmarks.Landmarks.Num(); Hash *= 1099511628211ull;
+				LocalMetaTagMesh->Metadata.ContentHashHi = int32((Hash >> 32) & 0xFFFFFFFF);
+				LocalMetaTagMesh->Metadata.ContentHashLo = int32(Hash & 0xFFFFFFFF);
+				SkelMesh->MarkPackageDirty();
+			}
+		}
+		if (Skeleton)
+		{
+			if (UAngelGeneratedTag* LocalMetaTagSkel = Cast<UAngelGeneratedTag>(Skeleton->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass())))
+			{
+				LocalMetaTagSkel->Metadata.GeneratorVersion = 1;
+				LocalMetaTagSkel->Metadata.GeneratedUtcSeconds = FDateTime::UtcNow().ToUnixTimestamp();
+				LocalMetaTagSkel->Metadata.TemplateName = CurrentTemplate->TemplateName;
+				LocalMetaTagSkel->Metadata.SourceMeshName = CachedMesh->GetFName();
+				LocalMetaTagSkel->Metadata.ContentHashHi = 0;
+				LocalMetaTagSkel->Metadata.ContentHashLo = 0;
+				Skeleton->MarkPackageDirty();
+			}
+		}
+
 		SetStatus("Assets generated.");
 
-		// Open assets in their native editors for immediate inspection
 		OpenAssetsInEditors(Skeleton, SkelMesh, ControlRigBP);
 #endif
 		return FReply::Handled();
@@ -469,6 +523,200 @@ private:
 		DebugPoints.Reset();
 		LandmarkList->ClearChildren();
 		SetStatus("Cleared.");
+#endif
+		return FReply::Handled();
+	}
+
+	USkeletalMesh* FindSelectedSkeletalMesh() const
+	{
+#if WITH_EDITOR
+		if (GEditor && GEditor->GetSelectedObjects())
+		{
+			USelection* Sel = GEditor->GetSelectedObjects();
+			for (int32 i=0;i<Sel->Num();++i)
+			{
+				if (USkeletalMesh* Skel = Cast<USkeletalMesh>(Sel->GetSelectedObject(i)))
+				{
+					return Skel;
+				}
+			}
+		}
+#endif
+		return nullptr;
+	}
+
+	UAngelGeneratedTag* GetGeneratedTag(USkeletalMesh* SkelMesh) const
+	{
+		if (!SkelMesh) return nullptr;
+		return Cast<UAngelGeneratedTag>(SkelMesh->GetAssetUserDataOfClass(UAngelGeneratedTag::StaticClass()));
+	}
+
+	FReply OnRebuildWeights()
+	{
+#if WITH_EDITOR
+		USkeletalMesh* SkelMesh = FindSelectedSkeletalMesh();
+		if (!SkelMesh)
+		{
+			SetStatus("Select a SkeletalMesh to rebuild weights.");
+			return FReply::Handled();
+		}
+		UAngelGeneratedTag* GeneratedTag = GetGeneratedTag(SkelMesh);
+		if (!GeneratedTag)
+		{
+			SetStatus("Mesh not tagged (skip).");
+			return FReply::Handled();
+		}
+
+		FSkeletalMeshModel* ImportedModel = SkelMesh->GetImportedModel();
+		if (!ImportedModel || ImportedModel->LODModels.Num()==0)
+		{
+			SetStatus("No LOD model.");
+			return FReply::Handled();
+		}
+		FSkeletalMeshLODModel& LODModel = ImportedModel->LODModels[0];
+
+		// Compute bone world locations
+		const FReferenceSkeleton& RefSkel = SkelMesh->GetRefSkeleton();
+		TArray<FVector> BoneWorldPositions; BoneWorldPositions.SetNum(RefSkel.GetNum());
+		for (int32 BoneIdx=0; BoneIdx<RefSkel.GetNum(); ++BoneIdx)
+		{
+			FTransform Accum = RefSkel.GetRefBonePose()[BoneIdx];
+			int32 ParentIdx = RefSkel.GetParentIndex(BoneIdx);
+			while (ParentIdx != INDEX_NONE)
+			{
+				Accum = Accum * RefSkel.GetRefBonePose()[ParentIdx];
+				ParentIdx = RefSkel.GetParentIndex(ParentIdx);
+			}
+			BoneWorldPositions[BoneIdx] = Accum.GetLocation();
+		}
+
+		FScopedTransaction Tx(NSLOCTEXT("AngelStudio","RebuildWeights","Angel: Rebuild Weights"));
+		FScopedSlowTask SlowTask(1.f, FText::FromString(TEXT("Rebuilding weights..."))); SlowTask.MakeDialog(); SlowTask.EnterProgressFrame(1.f);
+
+		constexpr int32 NumInfluences = 4;
+		for (FSkelMeshSection& Section : LODModel.Sections)
+		{
+			for (FSoftSkinVertex& V : Section.SoftVertices)
+			{
+				FVector P = FVector(V.Position);
+				struct FBoneDist { int32 Id; float Dist; }; TArray<FBoneDist> Dists; Dists.Reserve(BoneWorldPositions.Num());
+				for (int32 i=0;i<BoneWorldPositions.Num();++i)
+				{
+					float d = FVector::DistSquared(P, BoneWorldPositions[i]);
+					Dists.Add({i,d});
+				}
+				Dists.Sort([](const FBoneDist& A, const FBoneDist& B){ return A.Dist < B.Dist; });
+				for (int32 inf=0; inf<NumInfluences; ++inf){ V.InfluenceWeights[inf]=0; V.InfluenceBones[inf]=0; }
+				float InvTotal=0.f; float Raw[NumInfluences]={0};
+				int32 UseCount = FMath::Min(NumInfluences, Dists.Num());
+				for (int32 inf=0; inf<UseCount; ++inf)
+				{
+					float dist = FMath::Sqrt(Dists[inf].Dist);
+					float w = 1.f / FMath::Max(1.f, dist);
+					Raw[inf]=w; InvTotal+=w; V.InfluenceBones[inf] = (uint8)Dists[inf].Id;
+				}
+				if (InvTotal>0.f)
+				{
+					int32 Sum=0;
+					for (int32 inf=0; inf<UseCount; ++inf)
+					{
+						uint8 bw = (uint8)FMath::Clamp(FMath::RoundToInt((Raw[inf]/InvTotal)*255.f),0,255);
+						V.InfluenceWeights[inf]=bw; Sum+=bw;
+					}
+					if (Sum!=255 && UseCount>0)
+					{
+						int32 Drift=255-Sum; int32 Last=UseCount-1; int32 adj = FMath::Clamp(int32(V.InfluenceWeights[Last])+Drift,0,255); V.InfluenceWeights[Last]=(uint8)adj;
+					}
+				}
+			}
+		}
+		SkelMesh->MarkPackageDirty();
+		SetStatus("Weights rebuilt.");
+#endif
+		return FReply::Handled();
+	}
+
+	FReply OnRebuildMesh()
+	{
+#if WITH_EDITOR
+		USkeletalMesh* SkelMesh = FindSelectedSkeletalMesh();
+		if (!SkelMesh)
+		{
+			SetStatus("Select a SkeletalMesh to rebuild.");
+			return FReply::Handled();
+		}
+		UAngelGeneratedTag* GeneratedTag = GetGeneratedTag(SkelMesh);
+		if (!GeneratedTag)
+		{
+			SetStatus("Mesh not tagged (skip).");
+			return FReply::Handled();
+		}
+
+		// Locate source static mesh by name
+		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		TArray<FAssetData> AllMeshes; ARM.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetClassPathName(), AllMeshes);
+		UStaticMesh* SourceStatic = nullptr;
+		for (const FAssetData& AD : AllMeshes)
+		{
+			if (AD.AssetName == GeneratedTag->Metadata.SourceMeshName)
+			{
+				SourceStatic = Cast<UStaticMesh>(AD.GetAsset()); break;
+			}
+		}
+		if (!SourceStatic)
+		{
+			SetStatus("Source static mesh not found.");
+			return FReply::Handled();
+		}
+
+		// Use current template selection (or template name from tag)
+		UAngelRigTemplate* UseTemplate = CurrentTemplate;
+		if (!UseTemplate && GeneratedTag->Metadata.TemplateName != NAME_None)
+		{
+			TArray<FAssetData> TemplatesData; ARM.Get().GetAssetsByClass(UAngelRigTemplate::StaticClass()->GetClassPathName(), TemplatesData);
+			for (const FAssetData& TD : TemplatesData)
+			{
+				if (TD.AssetName == GeneratedTag->Metadata.TemplateName)
+				{
+					UseTemplate = Cast<UAngelRigTemplate>(TD.GetAsset()); break;
+				}
+			}
+		}
+		if (!UseTemplate)
+		{
+			SetStatus("Template not found.");
+			return FReply::Handled();
+		}
+
+		UAngelLandmarkDetector* Detector = NewObject<UAngelLandmarkDetector>();
+		FAngelLandmarkSolveResult Landmarks = Detector->DetectLandmarks(SourceStatic, UseTemplate);
+		if (!Landmarks.bSuccess)
+		{
+			SetStatus("Landmark detect failed.");
+			return FReply::Handled();
+		}
+
+		FString OldPath = SkelMesh->GetPathName();
+		FString BasePath; FString MeshAssetName;
+		if (!OldPath.Split(TEXT("."), &BasePath, &MeshAssetName))
+		{
+			SetStatus("Path parse failed."); return FReply::Handled();
+		}
+		FString NewMeshPath = BasePath + TEXT("/") + MeshAssetName + TEXT("_Regen");
+		if (FPackageName::DoesPackageExist(NewMeshPath))
+		{
+			NewMeshPath += TEXT("_1");
+		}
+		UPackage* NewPkg = CreatePackage(*NewMeshPath);
+		FName NewName(*FPackageName::GetShortName(NewMeshPath));
+		UAngelSkeletalMeshBuilder* Builder = NewObject<UAngelSkeletalMeshBuilder>();
+		USkeletalMesh* NewSkelMesh = Builder->BuildSkeletalMesh(NewPkg, SourceStatic, UseTemplate, Landmarks, NewName);
+		if (!NewSkelMesh)
+		{
+			SetStatus("Regen build failed.");
+			return FReply::Handled();
+		}
+		SetStatus("Mesh regenerated.");
 #endif
 		return FReply::Handled();
 	}

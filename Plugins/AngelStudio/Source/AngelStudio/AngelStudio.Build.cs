@@ -21,8 +21,6 @@ public class AngelStudio : ModuleRules
                 "AssetTools",
                 "ContentBrowser",
                 "Kismet",
-                "ControlRig",
-                "ControlRigEditor",
                 "EditorFramework",
                 "EditorStyle",
                 "Blutility",
@@ -30,7 +28,8 @@ public class AngelStudio : ModuleRules
                 "InteractiveToolsFramework",
                 "AssetRegistry",
                 "DeveloperSettings",
-                "PropertyEditor"
+                "PropertyEditor",
+                "ToolMenus"
             }
         );
 
@@ -39,12 +38,17 @@ public class AngelStudio : ModuleRules
             {
                 "InputCore",
                 "Projects",
-                "ApplicationCore",
-                "ToolMenus"
+                "ApplicationCore"
             }
         );
 
-        if (Target.bBuildEditor == false)
+        if (Target.bBuildEditor)
+        {
+            // Control Rig modules for editor-time blueprint creation & hierarchy editing
+            PublicDependencyModuleNames.AddRange(new string[]{ "ControlRig", "ControlRigEditor", "ControlRigDeveloper" });
+            PrivateDependencyModuleNames.AddRange(new string[]{ "KismetCompiler" });
+        }
+        else
         {
             PrivateDefinitions.Add("WITH_EDITOR=0");
         }

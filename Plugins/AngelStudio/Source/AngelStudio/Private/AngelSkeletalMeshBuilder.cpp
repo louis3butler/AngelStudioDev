@@ -35,6 +35,75 @@ DEFINE_LOG_CATEGORY_STATIC(LogAngelSkeletalMeshBuilder, Log, All);
 
 namespace AngelMeshInternal
 {
+	// Stable orientation helper (children centroid / end effector + roll stabilization)
+	static FQuat ComputeStableBoneOrientation(const FVector& BonePos, int32 ParentIndex, const FReferenceSkeleton& ExistingRef, const TArray<FName>& ChildNames, const TMap<FName,FTransform>& LandmarkWorld, const UAngelRigTemplate* Template)
+	{
+		FVector AimDir = FVector::ForwardVector;
+		int32 CountChildren = 0; FVector ChildAccum(0,0,0);
+		for (const FName& ChildName : ChildNames)
+		{
+			const FAngelBoneDefinition* ChildDef = Template->BoneDefinitions.FindByPredicate([&](const FAngelBoneDefinition& D){ return D.BoneName == ChildName; });
+			if (ChildDef && ChildDef->LandmarksUsed.Num() > 0)
+			{
+				if (const FTransform* ChildLM = LandmarkWorld.Find(ChildDef->LandmarksUsed[0]))
+				{
+					ChildAccum += ChildLM->GetLocation(); ++CountChildren;
+				}
+			}
+		}
+		if (CountChildren > 0)
+		{
+			AimDir = (ChildAccum/float(CountChildren)) - BonePos;
+			if (!AimDir.Normalize()) AimDir = FVector::ForwardVector;
+		}
+		else if (ParentIndex != INDEX_NONE)
+		{
+			FVector ParentWorld(0,0,0);
+			FTransform Accum = ExistingRef.GetRefBonePose()[ParentIndex];
+			int32 Walker = ExistingRef.GetParentIndex(ParentIndex);
+			while (Walker != INDEX_NONE)
+			{
+				Accum = Accum * ExistingRef.GetRefBonePose()[Walker];
+				Walker = ExistingRef.GetParentIndex(Walker);
+			}
+			ParentWorld = Accum.GetLocation();
+			AimDir = BonePos - ParentWorld;
+			if (!AimDir.Normalize()) AimDir = FVector::ForwardVector;
+		}
+		FVector UpCandidate = FVector::UpVector;
+		if (ParentIndex != INDEX_NONE)
+		{
+			FVector ParentWorld(0,0,0);
+			FTransform Accum = ExistingRef.GetRefBonePose()[ParentIndex];
+			int32 Walker = ExistingRef.GetParentIndex(ParentIndex);
+			while (Walker != INDEX_NONE)
+			{
+				Accum = Accum * ExistingRef.GetRefBonePose()[Walker];
+				Walker = ExistingRef.GetParentIndex(Walker);
+			}
+			ParentWorld = Accum.GetLocation();
+			FVector ParentDir = BonePos - ParentWorld; ParentDir.Normalize();
+			FVector PlaneNormal = (AimDir ^ ParentDir).GetSafeNormal();
+			if (!PlaneNormal.IsNearlyZero()) UpCandidate = PlaneNormal;
+		}
+		if (FMath::Abs(UpCandidate | AimDir) > 0.98f)
+		{
+			UpCandidate = (AimDir ^ FVector::RightVector).GetSafeNormal();
+			if (UpCandidate.IsNearlyZero()) UpCandidate = (AimDir ^ FVector::UpVector).GetSafeNormal();
+		}
+		FVector XAxis = AimDir;
+		FVector ZAxis = UpCandidate.GetSafeNormal();
+		FVector YAxis = (ZAxis ^ XAxis).GetSafeNormal();
+		ZAxis = (XAxis ^ YAxis).GetSafeNormal();
+		FMatrix Basis(
+			FPlane(XAxis,0),
+			FPlane(YAxis,0),
+			FPlane(ZAxis,0),
+			FPlane(FVector::ZeroVector,0)
+		);
+		return FQuat(Basis);
+	}
+
 	static int32 FindNearestBoneIndex(const FVector& Pos, const TArray<FAngelGeneratedBone>& Bones)
 	{
 		int32 BestIndex = INDEX_NONE;
@@ -469,49 +538,15 @@ USkeletalMesh* UAngelSkeletalMeshBuilder::BuildSkeletalMesh(
 			}
 		}
 
-		// Orientation from child average
-		TArray<FName> ChildNames;
-		ParentToChildren.MultiFind(BoneName, ChildNames);
-		FVector AimDir = FVector::ForwardVector;
-		if (ChildNames.Num() > 0)
-		{
-			FVector Accum(0,0,0); int32 Count=0;
-			for (const FName& ChildBoneName : ChildNames)
-			{
-				const FAngelBoneDefinition* ChildDef = Template->BoneDefinitions.FindByPredicate([&](const FAngelBoneDefinition& D){ return D.BoneName == ChildBoneName; });
-				if (ChildDef && ChildDef->LandmarksUsed.Num() > 0)
-				{
-					if (const FTransform* ChildLM = LandmarkWorld.Find(ChildDef->LandmarksUsed[0]))
-					{
-						Accum += ChildLM->GetLocation(); ++Count;
-					}
-				}
-			}
-			if (Count>0)
-			{
-				AimDir = (Accum/float(Count)) - BoneWorld.GetLocation();
-				if (!AimDir.Normalize()) { AimDir = FVector::ForwardVector; }
-			}
-		}
-
-		FVector XAxis = AimDir;
-		FVector ZAxis = FVector::UpVector;
-		if (FMath::Abs(ZAxis | XAxis) > 0.99f) { ZAxis = FVector::RightVector; }
-		FVector YAxis = (ZAxis ^ XAxis).GetSafeNormal();
-		ZAxis = (XAxis ^ YAxis).GetSafeNormal();
-		FMatrix Basis(
-			FPlane(XAxis,0),
-			FPlane(YAxis,0),
-			FPlane(ZAxis,0),
-			FPlane(FVector::ZeroVector,0)
-		);
-		BoneWorld.SetRotation(FQuat(Basis));
-
+		// Orientation from refined helper (children centroid or away from parent + roll stabilization)
 		int32 ParentIndex = INDEX_NONE;
 		if (BoneDef.ParentBoneName != NAME_None)
 		{
 			if (int32* FoundParent = BoneNameToIndex.Find(BoneDef.ParentBoneName)) { ParentIndex = *FoundParent; }
 		}
+		TArray<FName> ChildNames; ParentToChildren.MultiFind(BoneName, ChildNames);
+		FQuat BoneRot = AngelMeshInternal::ComputeStableBoneOrientation(BoneWorld.GetLocation(), ParentIndex, RefSkeleton, ChildNames, LandmarkWorld, Template);
+		BoneWorld.SetRotation(BoneRot);
 
 		FTransform Local = BoneWorld;
 		if (ParentIndex != INDEX_NONE)
